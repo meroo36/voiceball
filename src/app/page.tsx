@@ -1,101 +1,218 @@
-import Image from "next/image";
+"use client";
+// pages/index.tsx
+import { useEffect, useRef, useState } from "react";
+import io, { Socket } from "socket.io-client";
+
+const socket: Socket = io();
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [isScreenSharing, setIsScreenSharing] = useState<boolean>(false);
+  const localStreamRef = useRef<HTMLAudioElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null); // Changed to video
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+  useEffect(() => {
+    async function getUserMedia() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        mediaStreamRef.current = stream;
+
+        if (localStreamRef.current) {
+          localStreamRef.current.srcObject = stream;
+        }
+
+        const peerConnection = new RTCPeerConnection();
+        peerConnectionRef.current = peerConnection;
+
+        stream
+          .getTracks()
+          .forEach((track) => peerConnection.addTrack(track, stream));
+
+        peerConnection.ontrack = (event) => {
+          const [remoteStream] = event.streams;
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = remoteStream; // Display the remote stream
+          }
+        };
+
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit("ice-candidate", event.candidate);
+          }
+        };
+
+        socket.on("offer", async (offer: RTCSessionDescriptionInit) => {
+          try {
+            if (peerConnectionRef.current) {
+              await peerConnection.setRemoteDescription(
+                new RTCSessionDescription(offer)
+              );
+              const answer = await peerConnection.createAnswer();
+              await peerConnection.setLocalDescription(answer);
+              socket.emit("answer", answer);
+            }
+          } catch (error) {
+            console.error("Error handling offer:", error);
+          }
+        });
+
+        socket.on("answer", async (answer: RTCSessionDescriptionInit) => {
+          try {
+            if (peerConnectionRef.current) {
+              await peerConnection.setRemoteDescription(
+                new RTCSessionDescription(answer)
+              );
+            }
+          } catch (error) {
+            console.error("Error handling answer:", error);
+          }
+        });
+
+        socket.on("ice-candidate", async (candidate: RTCIceCandidateInit) => {
+          try {
+            if (candidate && peerConnectionRef.current) {
+              await peerConnection.addIceCandidate(
+                new RTCIceCandidate(candidate)
+              );
+            }
+          } catch (error) {
+            console.error("Error adding ICE candidate:", error);
+          }
+        });
+
+        setIsConnected(true);
+      } catch (error) {
+        console.error("Error accessing microphone:", error);
+      }
+    }
+
+    getUserMedia();
+  }, []);
+
+  const createOffer = async () => {
+    if (peerConnectionRef.current) {
+      const offer = await peerConnectionRef.current.createOffer();
+      await peerConnectionRef.current.setLocalDescription(offer);
+      socket.emit("offer", offer);
+    }
+  };
+
+  const toggleMute = () => {
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getAudioTracks().forEach((track) => {
+        track.enabled = !isMuted;
+      });
+      setIsMuted(!isMuted);
+    }
+  };
+
+  const hangUp = () => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+    setIsConnected(false);
+  };
+
+  const startScreenShare = async () => {
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          height: 1080, // Request high resolution
+          width: 1920, // Request high resolution
+          frameRate: { ideal: 30, max: 60 }, // Set frame rate (30-60 fps)
+        },
+        audio: true, // Include audio from the screen
+      });
+
+      screenStream.getTracks().forEach((track) => {
+        if (peerConnectionRef.current) {
+          peerConnectionRef.current.addTrack(track, screenStream);
+        }
+      });
+
+      // Show the shared screen on the remote side
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = screenStream;
+      }
+      setIsScreenSharing(true);
+    } catch (error) {
+      console.error("Error sharing screen:", error);
+    }
+  };
+
+  const stopScreenShare = () => {
+    if (peerConnectionRef.current) {
+      const tracks = peerConnectionRef.current
+        .getSenders()
+        .filter((sender) => sender.track?.kind === "video");
+      tracks.forEach((sender) => {
+        sender.track?.stop(); // Stop the video track
+        peerConnectionRef.current!.removeTrack(sender); // Remove it from the connection
+      });
+    }
+    setIsScreenSharing(false);
+  };
+
+  return (
+    <div className="flex flex-col items-center justify-center h-screen">
+      <h1 className="text-2xl font-bold mb-4">Voice Chat</h1>
+      <audio ref={localStreamRef} autoPlay muted />
+      <video
+        ref={remoteVideoRef}
+        autoPlay
+        className="border border-gray-500 rounded"
+        style={{
+          width: "100%",
+          height: "auto",
+          maxWidth: "1920px",
+          maxHeight: "1080px",
+        }}
+      />
+      <div className="flex space-x-4 mt-4">
+        <button
+          onClick={createOffer}
+          disabled={!isConnected}
+          className="bg-blue-500 text-white p-2 rounded"
         >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+          Start Call
+        </button>
+        <button
+          onClick={toggleMute}
+          className={`bg-${
+            isMuted ? "gray-500" : "green-500"
+          } text-white p-2 rounded`}
         >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+          {isMuted ? "Unmute" : "Mute"}
+        </button>
+        <button
+          onClick={hangUp}
+          disabled={!isConnected}
+          className="bg-red-500 text-white p-2 rounded"
         >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          Hang Up
+        </button>
+        <button
+          onClick={isScreenSharing ? stopScreenShare : startScreenShare}
+          className="bg-yellow-500 text-white p-2 rounded"
+        >
+          {isScreenSharing ? "Stop Sharing" : "Share Screen"}
+        </button>
+      </div>
+      <p className="mt-4">{isConnected ? "Connected" : "Not Connected"}</p>
     </div>
   );
 }
